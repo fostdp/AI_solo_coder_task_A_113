@@ -29,15 +29,20 @@ func main() {
 	database.SeedBedData()
 	log.Println("床位数据初始化完成")
 
+	database.InitBatchWriter()
+	defer database.VitalWriter.Stop()
+	log.Println("批量写入器启动完成")
+
 	alert.InitAlertSystem()
 	log.Println("告警系统初始化完成")
 
 	ml.InitMLModels()
-	log.Println("机器学习模型加载完成")
+	ml.InitMAML()
+	log.Println("机器学习模型加载完成（含MAML元学习）")
 
 	mqtt.InitMQTT()
 	defer mqtt.CloseMQTT()
-	log.Println("MQTT连接成功")
+	log.Println("MQTT连接成功（持久会话）")
 
 	go ml.StartPeriodicPrediction()
 	log.Println("定时预测任务已启动")
