@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
 	"field-hospital-icu/database"
 	"field-hospital-icu/models"
-	"field-hospital-icu/ml"
-	"field-hospital-icu/alert"
+	"field-hospital-icu/sepsis_lstm"
+	"field-hospital-icu/infection_rf"
+	"field-hospital-icu/alert_ws"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -44,10 +47,14 @@ func GetBeds(c *gin.Context) {
 }
 
 func GetBedByID(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid bed id"})
+		return
+	}
 
 	var b models.Bed
-	err := database.DB.QueryRow(context.Background(),
+	err = database.DB.QueryRow(context.Background(),
 		`SELECT id, bed_code, patient_name, patient_age, patient_gender, status, admission_time, location_x, location_y, created_at
 		 FROM beds WHERE id = $1`, id).Scan(&b.ID, &b.BedCode, &b.PatientName, &b.PatientAge,
 		&b.PatientGender, &b.Status, &b.AdmissionTime, &b.LocationX, &b.LocationY, &b.CreatedAt)
@@ -60,7 +67,12 @@ func GetBedByID(c *gin.Context) {
 }
 
 func GetBedVitals(c *gin.Context) {
-	bedID, _ := strconv.Atoi(c.Param("id"))
+	bedID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid bed id"})
+		return
+	}
+
 	hours := 1
 	if h := c.Query("hours"); h != "" {
 		if hi, err := strconv.Atoi(h); err == nil && hi > 0 {
@@ -92,7 +104,12 @@ func GetBedVitals(c *gin.Context) {
 }
 
 func GetRecentVitals(c *gin.Context) {
-	bedID, _ := strconv.Atoi(c.Param("id"))
+	bedID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid bed id"})
+		return
+	}
+
 	seconds := 60
 	if s := c.Query("seconds"); s != "" {
 		if si, err := strconv.Atoi(s); err == nil && si > 0 {
@@ -189,19 +206,18 @@ func GetInfectionRiskMap(c *gin.Context) {
 	defer rows.Close()
 
 	beds := make([]models.InfectionRiskPoint, 0)
-	predictions := ml.GetLatestPredictions()
+	var infectionPredictions map[int]infection_rf.InfectionPrediction
+	if infection_rf.Instance != nil {
+		infectionPredictions = infection_rf.Instance.PredictAll()
+	}
 
 	for rows.Next() {
 		var p models.InfectionRiskPoint
 		if err := rows.Scan(&p.BedID, &p.BedCode, &p.X, &p.Y); err == nil {
-			if pred, ok := predictions[p.BedID]; ok {
+			if pred, ok := infectionPredictions[p.BedID]; ok {
 				p.CRERisk = pred.CRERisk
 				p.MRSARisk = pred.MRSARisk
-				if p.CRERisk > p.MRSARisk {
-					p.MaxRisk = p.CRERisk
-				} else {
-					p.MaxRisk = p.MRSARisk
-				}
+				p.MaxRisk = pred.MaxRisk
 			}
 			beds = append(beds, p)
 		}
@@ -220,26 +236,38 @@ func GetStatistics(c *gin.Context) {
 	database.DB.QueryRow(context.Background(),
 		"SELECT COUNT(*) FROM alerts WHERE acknowledged = FALSE").Scan(&stats.ActiveAlerts)
 
-	predictions := ml.GetLatestPredictions()
-	var totalSOFA float64
-	for _, p := range predictions {
-		totalSOFA += p.SOFAScore
-		if p.SepsisProbability > 0.7 {
-			stats.HighRiskSepsis++
+	if sepsis_lstm.Instance != nil {
+		sepsisPreds := sepsis_lstm.Instance.RunPredictionAll()
+		var totalSOFA float64
+		for _, p := range sepsisPreds {
+			totalSOFA += float64(p.SOFAScore)
+			if p.Probability > 0.7 {
+				stats.HighRiskSepsis++
+			}
 		}
-		if p.CRERisk > 0.7 || p.MRSARisk > 0.7 {
-			stats.HighRiskInfection++
+		if len(sepsisPreds) > 0 {
+			stats.AvgSOFAScore = totalSOFA / float64(len(sepsisPreds))
 		}
 	}
-	if len(predictions) > 0 {
-		stats.AvgSOFAScore = totalSOFA / float64(len(predictions))
+
+	if infection_rf.Instance != nil {
+		infectionPreds := infection_rf.Instance.PredictAll()
+		for _, p := range infectionPreds {
+			if p.CRERisk > 0.7 || p.MRSARisk > 0.7 {
+				stats.HighRiskInfection++
+			}
+		}
 	}
 
 	c.JSON(200, stats)
 }
 
 func RecordAntibiotic(c *gin.Context) {
-	bedID, _ := strconv.Atoi(c.Param("id"))
+	bedID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid bed id"})
+		return
+	}
 
 	var record models.AntibioticRecord
 	if err := c.ShouldBindJSON(&record); err != nil {
@@ -248,7 +276,7 @@ func RecordAntibiotic(c *gin.Context) {
 	}
 	record.BedID = bedID
 
-	_, err := database.DB.Exec(context.Background(),
+	_, err = database.DB.Exec(context.Background(),
 		`INSERT INTO infection_history (bed_id, antibiotic_type, dosage, start_date, end_date)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		record.BedID, record.AntibioticType, record.Dosage, record.StartDate, record.EndDate)
@@ -257,11 +285,23 @@ func RecordAntibiotic(c *gin.Context) {
 		return
 	}
 
+	if infection_rf.Instance != nil {
+		days := 0
+		if !record.EndDate.IsZero() && !record.StartDate.IsZero() {
+			days = int(record.EndDate.Sub(record.StartDate).Hours() / 24)
+		}
+		infection_rf.Instance.SetAntibioticDays(bedID, days)
+	}
+
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
 func RecordInvasiveProcedure(c *gin.Context) {
-	bedID, _ := strconv.Atoi(c.Param("id"))
+	bedID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid bed id"})
+		return
+	}
 
 	var proc models.InvasiveProcedure
 	if err := c.ShouldBindJSON(&proc); err != nil {
@@ -270,7 +310,7 @@ func RecordInvasiveProcedure(c *gin.Context) {
 	}
 	proc.BedID = bedID
 
-	_, err := database.DB.Exec(context.Background(),
+	_, err = database.DB.Exec(context.Background(),
 		`INSERT INTO invasive_procedures (bed_id, procedure_type, procedure_time, notes)
 		 VALUES ($1, $2, $3, $4)`,
 		proc.BedID, proc.ProcedureType, proc.ProcedureTime, proc.Notes)
@@ -283,10 +323,14 @@ func RecordInvasiveProcedure(c *gin.Context) {
 }
 
 func AcknowledgeAlert(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid alert id"})
+		return
+	}
 	user := c.DefaultQuery("user", "system")
 
-	_, err := database.DB.Exec(context.Background(),
+	_, err = database.DB.Exec(context.Background(),
 		`UPDATE alerts SET acknowledged = TRUE, acknowledged_by = $1, acknowledged_at = NOW() WHERE id = $2`,
 		user, id)
 	if err != nil {
@@ -294,7 +338,9 @@ func AcknowledgeAlert(c *gin.Context) {
 		return
 	}
 
-	alert.BroadcastMessage("alert_ack", gin.H{"id": id, "user": user})
+	if alert_ws.EngineInstance != nil {
+		alert_ws.EngineInstance.BroadcastMessage("alert_ack", gin.H{"id": id, "user": user})
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -304,11 +350,15 @@ func WebSocketHandler(c *gin.Context) {
 		return
 	}
 
-	alert.RegisterClient(conn)
-	defer func() {
-		alert.UnregisterClient(conn)
-		conn.Close()
-	}()
+	if alert_ws.EngineInstance != nil {
+		alert_ws.EngineInstance.RegisterClient(conn)
+		defer func() {
+			alert_ws.EngineInstance.UnregisterClient(conn)
+			conn.Close()
+		}()
+	} else {
+		defer conn.Close()
+	}
 
 	for {
 		_, _, err := conn.ReadMessage()
