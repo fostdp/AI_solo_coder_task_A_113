@@ -71,9 +71,29 @@ func RunPredictionCycle() {
 		pred := predictBed(bedID)
 		savePrediction(pred)
 		alert.CheckAndTriggerAlert(pred)
+
+		go adaptMAMLForBed(bedID)
 	}
 
 	alert.BroadcastRiskUpdate()
+}
+
+func adaptMAMLForBed(bedID int) {
+	if MAML == nil {
+		return
+	}
+
+	seqLen := 30
+	sequence := BuildMAMLSequence(bedID, seqLen)
+	if len(sequence) < seqLen*4 {
+		return
+	}
+
+	sofa := float64(calculateSOFAScore(bedID))
+	target := math.Min(sofa/12.0, 1.0)
+	target = math.Max(0.05, target)
+
+	MAML.Personalize(bedID, sequence, target)
 }
 
 func updateVitalBuffer() {
@@ -201,6 +221,18 @@ func predictSepsisLSTM(bedID int) float64 {
 	defer vitalBufferMux.RUnlock()
 
 	seqLen := config.AppConfig.ML.LSTMSequenceLength
+
+	if MAML != nil && MAML.IsAdapted(bedID) {
+		sequence := BuildMAMLSequence(bedID, seqLen)
+		if len(sequence) >= 10*4 {
+			mamlProb := MAML.Predict(bedID, sequence)
+			sofa := float64(calculateSOFAScore(bedID))
+			sofaInfluence := math.Min(sofa/12.0, 1.0)
+			finalProb := mamlProb*0.7 + sofaInfluence*0.3
+			return math.Max(0, math.Min(1, finalProb))
+		}
+	}
+
 	features := extractLSTMFeatures(bedID, seqLen)
 
 	if len(features) == 0 {
