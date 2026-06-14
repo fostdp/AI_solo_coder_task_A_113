@@ -96,15 +96,18 @@ func main() {
 
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(*broker)
-	opts.SetClientID(*clientID)
+	opts.SetClientID(*clientID + "-persistent")
+	opts.SetCleanSession(false)
 	opts.SetAutoReconnect(true)
 	opts.SetConnectRetry(true)
-	opts.SetConnectRetryInterval(5 * time.Second)
+	opts.SetConnectRetryInterval(3 * time.Second)
+	opts.SetMaxReconnectInterval(1 * time.Minute)
+	opts.SetKeepAlive(60 * time.Second)
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
-		log.Println("MQTT已连接")
+		log.Println("MQTT已连接 (持久会话模式)")
 	})
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
-		log.Printf("MQTT连接断开: %v", err)
+		log.Printf("MQTT连接断开: %v (消息不会丢失，Broker已持久化)", err)
 	})
 
 	client := mqtt.NewClient(opts)
