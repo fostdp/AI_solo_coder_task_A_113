@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"field-hospital-icu/config"
 	"field-hospital-icu/models"
 )
 
@@ -37,6 +38,17 @@ func InitBatchWriter() {
 	VitalWriter = NewBatchWriter(DefaultBatchSize, DefaultFlushInterval, DefaultQueueSize)
 	VitalWriter.Start()
 	log.Println("批量写入器初始化完成，批次大小:", DefaultBatchSize)
+}
+
+func InitBatchWriterFromConfig(cfg config.BatchWriterConfig) {
+	VitalWriter = NewBatchWriter(
+		cfg.BatchSize,
+		time.Duration(cfg.FlushIntervalMs)*time.Millisecond,
+		cfg.QueueSize,
+	)
+	VitalWriter.Start()
+	log.Printf("批量写入器初始化完成，批次大小: %d, 刷盘间隔: %dms, 队列: %d",
+		cfg.BatchSize, cfg.FlushIntervalMs, cfg.QueueSize)
 }
 
 func NewBatchWriter(batchSize int, flushInterval time.Duration, queueSize int) *BatchWriter {
