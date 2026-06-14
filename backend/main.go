@@ -11,6 +11,7 @@ import (
 	"field-hospital-icu/infection_rf"
 	"field-hospital-icu/alert_ws"
 	"field-hospital-icu/handlers"
+	"field-hospital-icu/metrics"
 	"field-hospital-icu/models"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,10 @@ import (
 
 func main() {
 	log.Println("=== 战地医院移动ICU生命体征监测系统启动 ===")
+
+	metrics.SetupMetrics()
+	log.Println("Prometheus metrics 端点启动: :6060/metrics")
+	log.Println("pprof 调试端点启动: :6060/debug/pprof/")
 
 	config.LoadConfig()
 	log.Println("配置加载完成")
