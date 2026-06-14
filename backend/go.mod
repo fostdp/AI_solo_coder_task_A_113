@@ -9,5 +9,6 @@ require (
 	github.com/jackc/pgx/v5 v5.5.1
 	github.com/eclipse/paho.mqtt.golang v1.4.3
 	github.com/spf13/viper v1.18.2
+	github.com/prometheus/client_golang v1.18.0
 	gonum.org/v1/gonum v0.14.0
 )
