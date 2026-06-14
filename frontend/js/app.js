@@ -7,13 +7,15 @@ let bedRisks = {};
 let alerts = [];
 let charts = {};
 let miniChart = null;
-let heatmapChart = null;
 let selectedBedForDetail = null;
+let bedChart = null;
+let riskHeatmap = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
-    initCanvas();
+    initBedChart();
     initCharts();
+    initHeatmap();
     loadInitialData();
     connectWebSocket();
     updateTime();
@@ -35,9 +37,9 @@ function initTabs() {
                     Object.values(charts).forEach(c => c && c.resize());
                 }, 100);
             }
-            if (tab === 'heatmap') {
+            if (tab === 'heatmap' && riskHeatmap) {
                 setTimeout(() => {
-                    if (heatmapChart) heatmapChart.resize();
+                    riskHeatmap.resize();
                     loadHeatmapData();
                 }, 100);
             }
@@ -45,138 +47,15 @@ function initTabs() {
     });
 }
 
-function initCanvas() {
-    const canvas = document.getElementById('bedLayoutCanvas');
-    const ctx = canvas.getContext('2d');
-
-    canvas.addEventListener('click', (e) => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-
-        for (const bed of Object.values(bedData)) {
-            const bx = bed.location_x;
-            const by = bed.location_y;
-            if (x >= bx - 40 && x <= bx + 40 && y >= by - 40 && y <= by + 40) {
-                selectBed(bed.id);
-                break;
-            }
-        }
+function initBedChart() {
+    bedChart = new BedChart('bedChartContainer');
+    bedChart.onBedClick((bedId, bed) => {
+        selectBed(bedId);
     });
-
-    drawBeds(ctx);
 }
 
-function drawBeds(ctx) {
-    const canvas = ctx.canvas;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    ctx.strokeStyle = 'rgba(59, 130, 246, 0.1)';
-    ctx.lineWidth = 1;
-    for (let x = 0; x < canvas.width; x += 50) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-    }
-    for (let y = 0; y < canvas.height; y += 50) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(canvas.width, y);
-        ctx.stroke();
-    }
-
-    for (let row = 0; row < 5; row++) {
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.08)';
-        ctx.fillRect(10, row * 100 + 10, 1060, 80);
-        ctx.fillStyle = '#3b82f6';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.fillText(`病区 ${row + 1}`, 20, row * 100 + 30);
-    }
-
-    for (const bed of Object.values(bedData)) {
-        drawSingleBed(ctx, bed);
-    }
-}
-
-function drawSingleBed(ctx, bed) {
-    const x = bed.location_x;
-    const y = bed.location_y;
-    const risk = bedRisks[bed.id];
-    const vitals = bedVitals[bed.id];
-
-    let riskLevel = 'normal';
-    let riskColor = '#22c55e';
-
-    if (risk) {
-        const maxRisk = Math.max(risk.sofa_score / 12, risk.sepsis_probability, risk.cre_risk, risk.mrsa_risk);
-        if (maxRisk > 0.7 || risk.sofa_score >= 6) {
-            riskLevel = 'critical';
-            riskColor = '#ef4444';
-        } else if (maxRisk > 0.5 || risk.sofa_score >= 2) {
-            riskLevel = 'warning';
-            riskColor = '#f59e0b';
-        }
-    }
-
-    if (riskLevel !== 'normal') {
-        const pulse = (Math.sin(Date.now() / 300) + 1) / 2;
-        ctx.beginPath();
-        ctx.arc(x, y, 45 + pulse * 8, 0, Math.PI * 2);
-        ctx.fillStyle = riskColor + '33';
-        ctx.fill();
-    }
-
-    const bedWidth = 70;
-    const bedHeight = 60;
-    const bx = x - bedWidth / 2;
-    const by = y - bedHeight / 2;
-
-    ctx.fillStyle = riskLevel === 'critical' ? 'rgba(239, 68, 68, 0.25)'
-        : riskLevel === 'warning' ? 'rgba(245, 158, 11, 0.25)'
-        : 'rgba(30, 58, 100, 0.7)';
-    ctx.strokeStyle = riskColor;
-    ctx.lineWidth = 2;
-    roundRect(ctx, bx, by, bedWidth, bedHeight, 8);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(bed.bed_code, x, by + 20);
-
-    if (vitals) {
-        ctx.font = '10px sans-serif';
-        ctx.fillStyle = '#f87171';
-        ctx.fillText(`❤ ${vitals.ecg ? vitals.ecg.toFixed(0) : '--'}`, x, by + 36);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillText(`🩸 ${vitals.spo2 ? vitals.spo2.toFixed(0) : '--'}%`, x, by + 48);
-    }
-
-    if (risk && risk.sofa_score >= 2) {
-        ctx.fillStyle = '#ef4444';
-        ctx.beginPath();
-        ctx.arc(x + bedWidth / 2 - 8, by - 6, 8, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 9px sans-serif';
-        ctx.fillText('!', x + bedWidth / 2 - 8, by - 3);
-    }
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
+function initHeatmap() {
+    riskHeatmap = new RiskHeatmap('heatmapChart');
 }
 
 function selectBed(bedId) {
@@ -221,7 +100,6 @@ function initCharts() {
     charts.chartSpO2 = echarts.init(document.getElementById('chartSpO2'), 'dark');
     charts.chartTemp = echarts.init(document.getElementById('chartTemp'), 'dark');
     miniChart = echarts.init(document.getElementById('miniChart'), 'dark');
-    heatmapChart = echarts.init(document.getElementById('heatmapChart'), 'dark');
 
     const commonOption = (color, yMin, yMax) => ({
         backgroundColor: 'transparent',
@@ -288,64 +166,13 @@ function initCharts() {
         ]
     });
 
-    heatmapChart.setOption({
-        backgroundColor: 'transparent',
-        tooltip: {
-            formatter: (p) => {
-                if (p.data && p.data.value) {
-                    return `床位: ICU-${String(p.data.bedId).padStart(3, '0')}<br/>
-                            CRE风险: ${(p.data.cre * 100).toFixed(1)}%<br/>
-                            MRSA风险: ${(p.data.mrsa * 100).toFixed(1)}%<br/>
-                            综合风险: ${(p.data.value * 100).toFixed(1)}%`;
-                }
-                return '';
-            }
-        },
-        visualMap: {
-            min: 0,
-            max: 1,
-            calculable: true,
-            orient: 'horizontal',
-            left: 'center',
-            bottom: 10,
-            textStyle: { color: '#8b9bb4' },
-            inRange: {
-                color: ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444']
-            }
-        },
-        grid: { left: 60, right: 60, top: 30, bottom: 60 },
-        xAxis: {
-            type: 'category',
-            data: Array.from({length: 10}, (_, i) => `列${i+1}`),
-            axisLine: { lineStyle: { color: '#2a4a7a' } },
-            axisLabel: { color: '#8b9bb4' }
-        },
-        yAxis: {
-            type: 'category',
-            data: Array.from({length: 5}, (_, i) => `病区${i+1}`),
-            axisLine: { lineStyle: { color: '#2a4a7a' } },
-            axisLabel: { color: '#8b9bb4' }
-        },
-        series: [{
-            name: '感染风险',
-            type: 'heatmap',
-            label: {
-                show: true,
-                color: '#fff',
-                fontSize: 11,
-                formatter: (p) => `ICU-${String(p.data.bedId).padStart(3, '0')}\n${(p.data.value * 100).toFixed(0)}%`
-            },
-            data: []
-        }]
-    });
-
     document.getElementById('bedSelect').addEventListener('change', loadVitalsForSelectedBed);
     document.getElementById('timeRange').addEventListener('change', loadVitalsForSelectedBed);
 
     window.addEventListener('resize', () => {
         Object.values(charts).forEach(c => c && c.resize());
         if (miniChart) miniChart.resize();
-        if (heatmapChart) heatmapChart.resize();
+        if (riskHeatmap) riskHeatmap.resize();
     });
 }
 
@@ -357,11 +184,12 @@ function loadInitialData() {
                 bedData[bed.id] = bed;
             });
             populateBedSelect(data);
-            drawBeds();
-            setInterval(() => {
-                const canvas = document.getElementById('bedLayoutCanvas');
-                if (canvas) drawBeds(canvas.getContext('2d'));
-            }, 1000);
+            if (bedChart) {
+                bedChart.setBeds(data);
+            }
+            if (riskHeatmap) {
+                riskHeatmap.setBeds(data);
+            }
         });
 
     loadStatistics();
@@ -499,23 +327,9 @@ function loadHeatmapData() {
     fetch(API_BASE + '/api/infection/risk')
         .then(r => r.json())
         .then(data => {
-            const heatData = data.map(p => ({
-                value: p.max_risk,
-                bedId: p.bed_id,
-                cre: p.cre_risk,
-                mrsa: p.mrsa_risk
-            }));
-
-            heatData.forEach(item => {
-                const bed = bedData[item.bedId];
-                if (bed) {
-                    const row = Math.floor((item.bedId - 1) / 10);
-                    const col = (item.bedId - 1) % 10;
-                    item.value = [col, row, item.max_risk];
-                }
-            });
-
-            heatmapChart.setOption({ series: [{ data: heatData }] });
+            if (riskHeatmap) {
+                riskHeatmap.setRiskData(data);
+            }
         });
 }
 
@@ -561,6 +375,11 @@ function handleVitalsUpdate(data) {
         if (item.vitals) bedVitals[bedId] = item.vitals;
         if (item.risk) bedRisks[bedId] = item.risk;
     });
+
+    if (bedChart) {
+        bedChart.setVitals(bedVitals);
+        bedChart.setRisks(bedRisks);
+    }
 
     if (selectedBedForDetail) {
         updateBedDetail(selectedBedForDetail);
