@@ -1,0 +1,26 @@
+server:
+  port: "8080"
+
+database:
+  host: "localhost"
+  port: "5432"
+  user: "postgres"
+  password: "postgres"
+  dbname: "field_hospital"
+  sslmode: "disable"
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  clientid: "field-hospital-backend"
+  username: ""
+  password: ""
+  qos: 1
+
+alert:
+  sofathreshold: 2.0
+  infectionthreshold: 0.7
+  smsgateway: "http://localhost:9090/sms"
+
+ml:
+  lstmsequencelength: 60
+  modelupdateinterval: 300
