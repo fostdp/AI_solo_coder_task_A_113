@@ -1,7 +1,6 @@
 package mqtt
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,6 +16,9 @@ var VitalChannel chan models.VitalSign
 
 func InitMQTT() {
 	VitalChannel = make(chan models.VitalSign, 10000)
+
+	InitPersistentClient()
+	PersistentClient.Connect()
 
 	opts := mqttlib.NewClientOptions()
 	opts.AddBroker(config.AppConfig.MQTT.Broker)
@@ -40,7 +42,6 @@ func InitMQTT() {
 		log.Printf("MQTT连接警告: %v", token.Error())
 	}
 
-	go processVitalSigns()
 	go seedInitialData()
 }
 
@@ -85,54 +86,13 @@ func messageHandler(c mqttlib.Client, msg mqttlib.Message) {
 		Unit:       m.Unit,
 	}
 
-	select {
-	case VitalChannel <- vital:
-	default:
-	}
-}
-
-func processVitalSigns() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	batch := make([]models.VitalSign, 0, 1000)
-
-	for {
+	if database.VitalWriter != nil {
+		database.VitalWriter.Write(vital)
+	} else {
 		select {
-		case vital := <-VitalChannel:
-			batch = append(batch, vital)
-			if len(batch) >= 500 {
-				insertBatch(batch)
-				batch = batch[:0]
-			}
-		case <-ticker.C:
-			if len(batch) > 0 {
-				insertBatch(batch)
-				batch = batch[:0]
-			}
+		case VitalChannel <- vital:
+		default:
 		}
-	}
-}
-
-func insertBatch(batch []models.VitalSign) {
-	tx, err := database.DB.Begin(context.Background())
-	if err != nil {
-		log.Printf("开启事务失败: %v", err)
-		return
-	}
-	defer tx.Rollback(context.Background())
-
-	stmt := `INSERT INTO vital_signs (time, bed_id, sensor_type, value, unit) VALUES ($1, $2, $3, $4, $5)`
-	for _, v := range batch {
-		_, err := tx.Exec(context.Background(), stmt, v.Time, v.BedID, v.SensorType, v.Value, v.Unit)
-		if err != nil {
-			log.Printf("插入数据失败: %v", err)
-			return
-		}
-	}
-
-	if err := tx.Commit(context.Background()); err != nil {
-		log.Printf("提交事务失败: %v", err)
 	}
 }
 
